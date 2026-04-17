@@ -1,6 +1,6 @@
 ---
 name: meeting-minutes
-description: "Generate meeting minutes from Granola recordings — fetch meeting data and transcript, fill the Meeting Minutes template, drop in INBOX."
+version: "0.0.1"description: "Generate meeting minutes from Granola recordings — fetch meeting data and transcript, fill the Meeting Minutes template, drop in INBOX."
 user-invocable: true
 argument-hint: "optional search term to filter meetings (e.g. 'OKR', 'Ventas', 'Feb 20')"
 ---
@@ -22,6 +22,18 @@ The user provides one of:
 - **Search term** — filter the meeting list by title match (case-insensitive). If exactly one match, use it directly. If multiple matches, present the filtered list for the user to choose.
 - **"batch"** — process multiple meetings at once (user selects which ones from the list).
 
+### User-Pasted Transcript Path
+
+If the user pastes a raw transcript directly in the conversation (or provides meeting metadata + transcript text), **use that as the primary source** instead of fetching from Granola. This path is valuable when:
+- Granola transcript is behind a paywall (paid tier)
+- The user has a transcript from another source (manual recording, Zoom, etc.)
+- The user wants to enrich existing minutes with a transcript they obtained separately
+
+When a user-pasted transcript is available:
+1. Skip Granola transcript fetch (Steps 1-2 transcript portions). Still use Granola for meeting metadata/summary if available.
+2. Use the pasted transcript as the verbatim source for the `## Transcript` collapsible block.
+3. Extract action items, decisions, waiting-for, and meeting notes directly from the transcript text — this often yields significantly richer output than Granola's AI summary alone (typically 50%+ more actionable items).
+
 ## Template
 
 The canonical meeting minutes template lives at:
@@ -29,11 +41,71 @@ The canonical meeting minutes template lives at:
 
 Read it fresh each time — do not hardcode the template contents. The user may update the template between sessions.
 
+## Granola Data Access
+
+This skill supports two methods for accessing Granola data. **Always try Method A first.** Fall back to Method B if MCP tools are unavailable.
+
+### Method A — Granola MCP (preferred)
+
+Use when `mcp__granola__*` tools are available in the session (check via ToolSearch for "granola").
+
+- **List meetings:** `mcp__granola__list_meetings` with `time_range: "last_30_days"`
+- **Fetch meeting:** `mcp__granola__get_meetings`
+- **Fetch transcript:** `mcp__granola__get_meeting_transcript`
+
+### Method B — Granola Local Cache + REST API (fallback)
+
+Use when the Granola MCP server shows "Connected" in `claude mcp list` but exposes zero tools. This is a known issue with Granola's MCP OAuth.
+
+**Step B1 — List meetings from local cache:**
+```python
+import json
+cache_path = "~/Library/Application Support/Granola/cache-v6.json"
+# data["cache"]["state"]["documents"] → dict of doc_id → meeting data
+# Each document has: title, created_at, people, google_calendar_event, type, notes_markdown
+```
+
+**Step B2 — Fetch transcript via REST API:**
+```python
+import json, urllib.request, gzip
+# Auth token from: ~/Library/Application Support/Granola/supabase.json
+#   → json.loads(data["workos_tokens"])["access_token"]
+# POST https://api.granola.ai/v1/get-document-transcript
+#   Body: {"document_id": "<id>"}
+#   Headers: Authorization header with access token, Accept-Encoding: gzip
+# Response is gzip-encoded list of {document_id, start_timestamp, text, source, id}
+```
+
+**Step B3 — Fetch AI summary panels via REST API:**
+```python
+# POST https://api.granola.ai/v1/get-document-panels
+#   Body: {"document_id": "<id>"}
+#   Same auth + gzip handling as transcript
+# Returns list of panels — look for template_slug: "meeting-summary-consolidated"
+#   → panel["original_content"] contains HTML summary
+```
+
+**Step B4 — Fetch full document via REST API (if local cache is stale):**
+```python
+# POST https://api.granola.ai/v1/get-documents-batch
+#   Body: {"document_ids": ["<id>"]}
+#   Returns {"docs": [...]} with full document objects
+```
+
 ## Workflow
+
+### Step 0 — Determine Access Method
+
+1. Search for Granola MCP tools via ToolSearch ("granola").
+2. If tools found → use Method A for all subsequent steps.
+3. If no tools found → check `claude mcp list` to confirm server status, then use Method B.
+4. Do NOT ask the user to reconnect or re-authorize — use the fallback silently.
 
 ### Step 1 — List Meetings
 
-Call `mcp__granola__list_meetings` with `time_range: "last_30_days"`.
+**Method A:** Call `mcp__granola__list_meetings` with `time_range: "last_30_days"`.
+
+**Method B:** Read the local cache at `~/Library/Application Support/Granola/cache-v6.json`. Extract `state.documents` and combine with `state.sharedDocuments`. Build a meeting list from document titles, `created_at` dates, and people/attendee counts.
 
 If the user provided a search term, filter the results by case-insensitive title match. Present the matching meetings as a numbered list:
 
@@ -47,9 +119,14 @@ Ask the user to pick one (or multiple if batch mode). If exactly one match from 
 
 ### Step 2 — Fetch Meeting Data
 
-For each selected meeting, fetch data in parallel:
+**Method A:** For each selected meeting, fetch data in parallel:
 1. `mcp__granola__get_meetings` — for summary, attendees, notes, and metadata.
 2. `mcp__granola__get_meeting_transcript` — for the full verbatim transcript.
+
+**Method B:** For each selected meeting, fetch via REST API (use Python with `urllib.request`):
+1. `get-document-transcript` — verbatim transcript segments, combine into full text.
+2. `get-document-panels` — AI-generated summary (use `original_content` from the summary panel).
+3. Meeting metadata (title, people, calendar event) from the local cache document object.
 
 ### Step 3 — Read Template
 
@@ -193,3 +270,12 @@ When processing multiple meetings:
 - Action items must be concrete and attributable. "Discuss further" is not an action item. "Schedule follow-up meeting on X topic — @Alberto" is.
 - If Granola returns minimal data (e.g., a very short meeting), still create the note but flag thin sections with "(No content captured)" rather than inventing filler.
 - Use Spanish for content that was originally in Spanish (most Bufalinda meetings). Do not translate — preserve the original language of the discussion.
+
+## Dependencies
+
+Shared capabilities from `_shared/nodes/` (resolve via `{{VAULT_ROOT}}/05 AI/CLAUDE CODE/skills/_shared/nodes/{name}.md`):
+- [[brief-updater]] — mode: log-entry, continuation-prompt, task-insert, wf-update
+
+## Related Skills
+- [[meeting-agenda]] — link minutes to agenda
+- [[followup]] — extract WF items from meeting decisions
