@@ -84,9 +84,9 @@ Example: `| 2026-04-10 | Follow-up | Sent via Slack to @Carlos re: supplier quot
 ---
 
 ### continuation-prompt
-**Used by:** session-close, close-day
+**Used by:** session-close, close-day, meeting-minutes, propagate-amendment
 
-Update or create `### Continuation Prompt` at top of `## Next Actions`. Only latest is kept -- overwritten each session.
+Update or create `### Continuation Prompt` at top of `## Next Actions`. Only latest is kept -- overwritten each session. **Hard rule:** A brief must contain exactly ONE Continuation Prompt block. If multiple are detected (legacy state from older skill versions or hand-edits), consolidate to one and place at the canonical location (top of `## Next Actions`, before any `- [ ]` items). Common drift: stray prompt placed AFTER `## Log` heading -- move it back to canonical location during update.
 
 ```markdown
 ### Continuation Prompt

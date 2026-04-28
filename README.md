@@ -2,7 +2,7 @@
 
 > Generate meeting minutes from Granola recordings — fetch meeting data and transcript, fill the Meeting Minutes template, drop in INBOX.
 
-**Version:** 0.0.1
+**Version:** 0.0.2
 
 ## Installation
 

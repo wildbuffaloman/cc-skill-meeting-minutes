@@ -1,9 +1,9 @@
 {
-    "bundled_at": "2026-04-17T00:53:07Z",
+    "bundled_at": "2026-04-28T19:00:00Z",
     "nodes": {
         "brief-updater": {
             "version": 1,
-            "source_hash": "a091ff5b98b4"
+            "source_hash": "e4dc7bb73424"
         }
     }
 }
