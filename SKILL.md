@@ -1,8 +1,9 @@
 ---
 name: meeting-minutes
-version: "0.0.1"description: "Generate meeting minutes from Granola recordings — fetch meeting data and transcript, fill the Meeting Minutes template, drop in INBOX."
+version: "0.0.2"
+description: "Generate meeting minutes from Granola recordings — fetch meeting data and transcript, fill the Meeting Minutes template, drop in INBOX."
 user-invocable: true
-argument-hint: "optional search term to filter meetings (e.g. 'OKR', 'Ventas', 'Feb 20')"
+argument-hint: "optional: search term, 'batch', or 'cron' (today-only, ledger-dedup, 7-day hard cutoff)"
 ---
 
 Generate structured meeting minutes from Granola meeting recordings, filling the vault's Meeting Minutes template and saving to INBOX.
@@ -21,6 +22,55 @@ The user provides one of:
 - **No argument** — list recent meetings from Granola and let the user pick one.
 - **Search term** — filter the meeting list by title match (case-insensitive). If exactly one match, use it directly. If multiple matches, present the filtered list for the user to choose.
 - **"batch"** — process multiple meetings at once (user selects which ones from the list).
+- **"cron"** — automated mode for scheduled triggers. No user interaction. Processes only meetings with `created_at` matching today's date, after applying a 7-day hard cutoff and checking the CC ledger for duplicates. See "Cron Mode" section below.
+
+## Cron Mode
+
+When invoked with the `cron` argument, the skill runs non-interactively for scheduled execution. The caller (a scheduled trigger) does not sit at a terminal, so there is no user to pick from a list.
+
+### Hard Rules (cron mode only)
+
+1. **7-day hard cutoff.** Ignore any meeting whose `created_at` is older than `today - 7 days`. This filter runs BEFORE the ledger check and cannot be overridden in cron mode.
+2. **Today-only default.** Process only meetings with `created_at` matching today's date (local). Meetings from yesterday / earlier days within the 7-day window are NOT processed in cron mode — they are handled by manual invocation if the user wants them.
+3. **Ledger dedup.** Before processing a candidate meeting, check the CC ledger (path below). If the meeting's Granola document ID appears in the `Processed` table, skip it silently.
+4. **Ledger append after success.** After each meeting's minutes file is written to INBOX, append a new row to the `Processed` table in the ledger with: date, title, Granola ID, vault note wikilink. This is a durable write — do not skip on failure (if ledger append fails, surface it as an error so we don't silently re-process).
+5. **No user prompts.** If zero meetings qualify today, write a single-line report and exit. Do not ask the user anything.
+6. **No brief updates in cron mode.** Step 7 (Update Related Briefs) is handled by the downstream `action-extraction` skill — skip it entirely in cron mode to avoid double-writes.
+
+### CC Ledger Path
+
+`~/.claude/state/processed-meetings.md` — resolved at runtime via `Path.home()` / `os.path.expanduser("~")`. Works on both MacBook Pro (`/Users/albertoduhau/.claude/state/`) and Mac Mini (`/Users/leoatreidis/.claude/state/`) without machine-specific hardcoding.
+
+Before reading or appending to the ledger, ensure the parent directory exists:
+
+```python
+from pathlib import Path
+ledger = Path.home() / ".claude" / "state" / "processed-meetings.md"
+ledger.parent.mkdir(parents=True, exist_ok=True)
+if not ledger.exists():
+    ledger.write_text("# Processed Meetings\n\n## Processed\n\n| Date | Meeting Title | Granola ID | Vault Note |\n|------|--------------|------------|------------|\n")
+```
+
+Format (markdown table under the `## Processed` heading):
+
+```
+| Date | Meeting Title | Granola ID | Vault Note |
+|------|--------------|------------|------------|
+| YYYY-MM-DD | Title | granola-doc-id | [[Meeting Minutes — Title — YYYY-MM-DD]] |
+```
+
+Dedup key: Granola document ID (column 3). Exact string match.
+
+### Cron-Mode Workflow
+
+1. List today's meetings via Method A or B (as determined by Step 0).
+2. Apply 7-day hard cutoff filter.
+3. Apply today-only filter.
+4. Read the CC ledger; drop any meeting whose Granola ID is already present.
+5. For each surviving meeting: run Steps 2–6 as normal (fetch, fill template, save to INBOX, report).
+6. After each save, append a ledger row.
+7. Skip Step 7 entirely.
+8. Final report: terminal-only summary listing meetings processed (or "no new meetings today").
 
 ### User-Pasted Transcript Path
 
@@ -47,11 +97,15 @@ This skill supports two methods for accessing Granola data. **Always try Method 
 
 ### Method A — Granola MCP (preferred)
 
-Use when `mcp__granola__*` tools are available in the session (check via ToolSearch for "granola").
+Use when `mcp__claude_ai_Granola__*` tools are available in the session (check via ToolSearch for "granola").
 
-- **List meetings:** `mcp__granola__list_meetings` with `time_range: "last_30_days"`
-- **Fetch meeting:** `mcp__granola__get_meetings`
-- **Fetch transcript:** `mcp__granola__get_meeting_transcript`
+- **List meetings:** `mcp__claude_ai_Granola__list_meetings` with `time_range: "last_30_days"`
+- **Fetch meeting:** `mcp__claude_ai_Granola__get_meetings`
+- **Fetch transcript:** `mcp__claude_ai_Granola__get_meeting_transcript`
+
+**Reliability notes:**
+- The MCP namespace is `mcp__claude_ai_Granola__*`, NOT `mcp__claude_ai_Granola__*`. Older docs may reference the latter — that prefix does not exist in the current MCP catalog.
+- `time_range: "this_week"` returns empty results even when meetings exist in-range (verified 2026-04-28). Always use `"last_30_days"` and filter client-side: parse each meeting's `created_at` ISO timestamp into local TZ before date-comparing. Naive string-prefix matching on `created_at` can fail across TZ boundaries.
 
 ### Method B — Granola Local Cache + REST API (fallback)
 
@@ -103,7 +157,7 @@ import json, urllib.request, gzip
 
 ### Step 1 — List Meetings
 
-**Method A:** Call `mcp__granola__list_meetings` with `time_range: "last_30_days"`.
+**Method A:** Call `mcp__claude_ai_Granola__list_meetings` with `time_range: "last_30_days"`.
 
 **Method B:** Read the local cache at `~/Library/Application Support/Granola/cache-v6.json`. Extract `state.documents` and combine with `state.sharedDocuments`. Build a meeting list from document titles, `created_at` dates, and people/attendee counts.
 
@@ -120,8 +174,8 @@ Ask the user to pick one (or multiple if batch mode). If exactly one match from 
 ### Step 2 — Fetch Meeting Data
 
 **Method A:** For each selected meeting, fetch data in parallel:
-1. `mcp__granola__get_meetings` — for summary, attendees, notes, and metadata.
-2. `mcp__granola__get_meeting_transcript` — for the full verbatim transcript.
+1. `mcp__claude_ai_Granola__get_meetings` — for summary, attendees, notes, and metadata.
+2. `mcp__claude_ai_Granola__get_meeting_transcript` — for the full verbatim transcript.
 
 **Method B:** For each selected meeting, fetch via REST API (use Python with `urllib.request`):
 1. `get-document-transcript` — verbatim transcript segments, combine into full text.
@@ -158,9 +212,10 @@ Map Granola data to the template fields:
 **Next Actions:**
 - Extract action items from Granola notes. Format as `- [ ] Action item — @Owner (if identifiable)`
 - If Granola provides no clear action items, extract them from the transcript/notes by identifying commitments, follow-ups, and to-dos mentioned.
+- **Ownership split rule** (per [[Brief Template Compliance]] convention, added 2026-04-21): route items where I (@Alberto) am **at least one of the owners** — including mixed ownership like `@Alberto / @Alondra` — to Next Actions. Items assigned **fully to others** (e.g., `@Alondra`, `@JC Zerpa / @Philippe`) go to Waiting For with the person populated as Owner. **Never** place @others-only items in Next Actions.
 
 **Waiting For:**
-- Extract items where someone committed to deliver something to someone else. Populate the Owner / Action / Due table.
+- Extract items where someone committed to deliver something to someone else (i.e., @others-only items). Populate the Owner / Action / Due table.
 - If no due dates were mentioned, leave the Due column empty.
 
 **Meeting Notes:**
