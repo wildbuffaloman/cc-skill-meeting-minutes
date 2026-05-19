@@ -1,6 +1,6 @@
 ---
 name: meeting-minutes
-version: "0.0.2"
+version: "0.0.3"
 description: "Generate meeting minutes from Granola recordings — fetch meeting data and transcript, fill the Meeting Minutes template, drop in INBOX."
 user-invocable: true
 argument-hint: "optional: search term, 'batch', or 'cron' (today-only, ledger-dedup, 7-day hard cutoff)"
@@ -71,6 +71,36 @@ Dedup key: Granola document ID (column 3). Exact string match.
 6. After each save, append a ledger row.
 7. Skip Step 7 entirely.
 8. Final report: terminal-only summary listing meetings processed (or "no new meetings today").
+
+### Synthesis-Status Tracking (rate-limit resilience)
+
+Meeting Minutes generation has two LLM-cost tiers:
+- **Cheap step** — fetch transcript from Granola, write the file scaffold (frontmatter + Transcript collapsible block).
+- **Expensive step** — synthesize Action Items, Waiting For, Decisions, Summary from the transcript.
+
+The expensive step can fail mid-run (rate limit, model timeout, agent context exhaustion) AFTER the cheap step has already written a partially-populated file to INBOX. Without explicit status tracking, downstream consumers (`/action-extraction`) cannot tell a "synthesis incomplete" file from an "intentionally empty" file (e.g., a meeting genuinely had no actions).
+
+**Required behavior:**
+
+1. **At the start of synthesis** (before extraction begins), write `synthesis_status: pending` to the Meeting Minutes file's frontmatter, alongside any other captured metadata (`title`, `date`, `attendees`, `granola_id`).
+
+2. **Before each major synthesis sub-step** (Action Items extraction, Waiting For extraction, Decisions extraction, Summary synthesis), write a placeholder line into the corresponding section like:
+   ```markdown
+   ## Action Items
+   _<!-- Synthesis pending — re-run /meeting-minutes ${granola_id} -->_
+   ```
+
+3. **On successful synthesis completion** (all four sections populated with real content, even if "None"), update frontmatter to `synthesis_status: complete`.
+
+4. **If the agent is rate-limited or otherwise aborts** during synthesis, the file remains on disk with `synthesis_status: pending` and the placeholder lines visible. The CC ledger row should NOT be appended in this case — re-running the skill must be allowed to overwrite the stub.
+
+5. **Re-run behavior:** when invoked with a meeting_id that already has a Meeting Minutes file:
+   - If `synthesis_status: complete` → skip (idempotent dedup).
+   - If `synthesis_status: pending` or absent → overwrite the synthesis sections (preserve frontmatter id/date), set `synthesis_status: complete` on success.
+
+**Downstream contract:** `/action-extraction` reads `synthesis_status` before processing. Files with `synthesis_status: pending` are surfaced as a clear error ("synthesis incomplete — re-run `/meeting-minutes ${granola_id}` first") rather than treated as input. See `~/.claude/skills/action-extraction/SKILL.md` § "Pre-flight: Synthesis-Status Check".
+
+**Evidence:** 2026-04-29 `/close-day` Phase 1A.7 — `/meeting-minutes cron` was rate-limited mid-run after capturing the G&P transcript (188KB) but before extracting actions. The resulting file had `## Next Actions: - None` and the raw timestamped transcript in `## Summary`. `/action-extraction` correctly refused to operate but couldn't tell whether the absence of actions was real or an extraction failure. A `synthesis_status: pending` flag would have made the failure explicit and unambiguous on first read.
 
 ### User-Pasted Transcript Path
 
@@ -155,6 +185,17 @@ import json, urllib.request, gzip
 3. If no tools found → check `claude mcp list` to confirm server status, then use Method B.
 4. Do NOT ask the user to reconnect or re-authorize — use the fallback silently.
 
+### Pre-flight — Cross-folder granola_id check
+
+Before any other work, scan the vault for an existing Meeting Minutes file that already covers a target Granola meeting. For each candidate meeting ID:
+
+1. Run `grep -rl "granola_id: <id>" "03 REFERENCE/" "02 AREAS/" "00 HUB/00 INBOX/" 2>/dev/null` (excluding `04 ARCHIVES/`).
+2. If a match is found AND that file has `synthesis_status: complete` in frontmatter → treat as already-routed; **skip the INBOX write entirely** and log as a dedup hit.
+3. If a match is found but `synthesis_status: pending` (or absent) → treat as a re-run case per the existing Synthesis-Status Tracking spec.
+4. If no match → proceed to Step 1.
+
+The CC ledger at `~/.claude/state/processed-meetings.md` is the cron-mode dedup signal; cross-folder file presence is the truer source. The ledger can miss entries (e.g., when a prior session crashed before the append) while the routed file already exists in REFERENCE. Evidence: 2026-05-13 — Repaso Semanal Ventas 2026-05-11 ledger entry was missing but yesterday's REF copy existed in `03 REFERENCE/BUSINESS/01 BUFALINDA/MINUTES/`; re-running `/meeting-minutes` produced a 62 KB INBOX duplicate alongside the 36 KB REF that needed manual dedupe + archive during `/action-extraction`.
+
 ### Step 1 — List Meetings
 
 **Method A:** Call `mcp__claude_ai_Granola__list_meetings` with `time_range: "last_30_days"`.
@@ -225,9 +266,10 @@ Map Granola data to the template fields:
 
 **Agenda linking:**
 
-Search vault AGENDAS folders for an agenda file matching this meeting:
-- Search locations: `02 AREAS/02 COMMUNITY/AGENDAS/`, `02 AREAS/03 BUSINESS/BUFALINDA/AGENDAS/`
-- Do NOT search `04 ARCHIVES/AGENDAS/`
+Search the vault for an agenda file matching this meeting:
+- **Search scope:** vault-wide via frontmatter — `grep -rl "category: meeting-agenda" "02 AREAS/" "03 REFERENCE/" "01 PROJECTS/" 2>/dev/null`
+- Do NOT search `04 ARCHIVES/`
+- **Why frontmatter scan, not hardcoded folders:** agendas live deeper than the conventional `AGENDAS/` subfolders. The canonical `[[Meeting Agenda Convention]]` requires `category: meeting-agenda` frontmatter on every agenda file, but the file can be located in any topical home (e.g., `02 AREAS/03 BUSINESS/BUFALINDA/MERCADEO/Distribución y Ventas/Agenda Repaso Semanal Ventas.md`). Hardcoded folder scans miss these. Evidence: 2026-05-13 — Repaso Semanal Ventas falsely reported "no agenda exists" based on a 2-folder scan; yesterday's REF copy had correctly linked the agenda via vault-wide search.
 - Matching strategy (try in order, stop at first confident match):
   1. **Filename keyword overlap** — Normalize the meeting title and each agenda filename by removing prefixes ("Agenda", "Meeting Agenda", "Reunion") and common stop words. Compare normalized word sets. Score = shared words / total unique words. Threshold: 50%+ overlap.
   2. **Attendee-heading match** — For agendas with H2 headings that are person names, check if Granola attendee names appear as H2 headings. If 2+ attendee names match, this is a strong match.

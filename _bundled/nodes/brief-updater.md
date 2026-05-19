@@ -18,12 +18,15 @@ After the last existing `- [ ]` line in the target section but BEFORE `### Conti
 Always use Edit with `old_string`/`new_string`. To append after a line, use that line as `old_string` and same line + new line as `new_string`. Never rewrite sections wholesale.
 
 ### Priority Emoji Mapping
-| Priority | Emoji |
-|----------|-------|
-| High / Apple 1-4 | 🔺 |
-| Medium / Apple 5 | ⏫ |
-| Low / Apple 6-9 | 🔼 |
-| Normal / Apple 0 | *(omit)* |
+
+Apple Reminders' UI exposes 4 levels (None/Low/Medium/High = 0/9/5/1). They map intuitively to Eisenhower quadrants — High = Q1 (today's fire), Medium = Q2 (strategic), Low = Q3 (quick admin), None = Q4 (defer). See `feedback_apple_reminders_q_mapping_intuitive.md` for the canonical rule.
+
+| Apple UI | Apple int | Emoji | Quadrant |
+|----------|-----------|-------|----------|
+| High | 1 (1-4) | 🔺 | Q1 |
+| Medium | 5 | ⏫ | Q2 |
+| Low | 9 (6-9) | 🔼 | Q3 |
+| None | 0 | *(omit)* | Q4 |
 
 ---
 

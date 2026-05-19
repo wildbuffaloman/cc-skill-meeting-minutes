@@ -2,7 +2,7 @@
 
 > Generate meeting minutes from Granola recordings — fetch meeting data and transcript, fill the Meeting Minutes template, drop in INBOX.
 
-**Version:** 0.0.2
+**Version:** 0.0.3
 
 ## Installation
 
@@ -16,10 +16,12 @@ git clone https://github.com/wildbuffaloman/cc-skill-meeting-minutes.git meeting
 Invoke in Claude Code:
 
 ```
-/meeting-minutes optional search term to filter meetings (e.g. 'OKR', 'Ventas', 'Feb 20')
+/meeting-minutes optional: search term, 'batch', or 'cron' (today-only, ledger-dedup, 7-day hard cutoff)
 ```
 
 ## Files
 
 - `SKILL.md`
+- `_bundled/manifest.json`
+- `_bundled/nodes/brief-updater.md`
 
