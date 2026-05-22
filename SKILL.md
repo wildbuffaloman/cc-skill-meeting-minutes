@@ -301,6 +301,8 @@ Save the filled template to:
 - Truncate the meeting title to 60 characters max if needed (to avoid overly long filenames)
 - Use the meeting date from Granola, not today's date
 
+**Frontmatter:** the new file's YAML must comply with [[Frontmatter Schema]] — emit every Required field for `category: meeting-minutes` per the Per-Category Required-Field Matrix, use canonical key names only, wikilink-typed fields as resolving `"[[wikilinks]]"`, unquoted ISO dates, and omit empty optional keys.
+
 ### Step 6 — Report
 
 Tell the user:
