@@ -291,6 +291,10 @@ If no matching agenda is found:
 ```
 This keeps the note clean while preserving the full record.
 
+### Step 4.5 — Organization Extraction (ambient enrichment)
+
+Scan the transcript for organization names mentioned (companies, vendors, regulators, partners, distributors). For each org not already present at `03 REFERENCE/COMMUNITY/ORGANIZATIONS/`, call `/organization-card quick {Name}` (Silent Quick Add). Cap at **3 per run, shared with contact extraction** per [[Contact & Organization Awareness]]. Domain-based candidates derived from any `@domain.com` mentioned in the transcript also count toward the shared cap.
+
 ### Step 5 — Save to INBOX
 
 Save the filled template to:
